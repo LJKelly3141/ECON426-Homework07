@@ -1,0 +1,336 @@
+---
+title: "ECON426: Regression Discontinuity Design"
+format:
+  docx:
+    toc: false
+    number-sections: false
+---
+
+# Introduction
+
+In this assignment you will implement a Regression Discontinuity Design (RDD) analysis using real data on U.S. Senate elections. RDD is a quasi-experimental method that exploits situations where treatment is assigned based on whether a continuous variable (the "running variable") crosses a threshold.
+
+We will use the `rddsenate` dataset, which contains data on U.S. Senate elections. The data is available in the `data/` folder. The key insight is that candidates who barely win an election (margin just above 0%) are essentially randomly assigned to "winning" compared to candidates who barely lose (margin just below 0%).
+
+The topics you will cover are:
+
+1. Understanding the RDD Setup
+2. Data Exploration and Visualization
+3. Basic RDD Estimation
+4. Optimal Bandwidth Selection
+5. Validity Checks
+6. Robustness Analysis
+
+# 1. Understanding the RDD Setup
+
+**Objective:**
+Understand the key components of an RDD using Senate election data.
+
+**Key Concepts:**
+
+- **Running Variable:** Democratic vote margin (`margin`) - the difference between Democratic and Republican vote shares
+- **Cutoff:** 0% (where margin = 0, the election is tied)
+- **Treatment:** Democratic win (`d` = 1 if Democrat wins, 0 otherwise)
+- **Outcome:** We will examine the Democratic vote share (`vote`) in subsequent analyses
+
+**The Identification Strategy:**
+
+At the cutoff (margin = 0), elections are essentially "coin flips." A candidate who wins by 0.1% is essentially identical to one who loses by 0.1%. This quasi-random assignment allows us to estimate causal effects of winning.
+
+```{r}
+# Load packages
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, rdrobust, rddensity, knitr)
+
+# Load the Senate RDD data from local data folder
+rddsenate <- read.csv("data/rddsenate.csv")
+
+# Examine the data structure
+glimpse(rddsenate)
+```
+
+**Question 1:** Why is it reasonable to assume that candidates just above and just below the 0% cutoff are comparable? What would violate this assumption?
+
+# 2. Data Exploration and Visualization
+
+**Objective:**
+Explore the data and visualize the regression discontinuity.
+
+**Instructions:**
+1. Create summary statistics for key variables.
+2. Visualize the relationship between margin and vote share.
+3. Look for a "jump" at the cutoff.
+
+**Summary Statistics:**
+
+```{r}
+# Summary statistics by treatment status
+rddsenate %>%
+  group_by(d) %>%
+  summarise(
+    n = n(),
+    mean_margin = mean(margin),
+    mean_vote = mean(vote),
+    sd_vote = sd(vote)
+  ) %>%
+  kable(digits = 3, caption = "Summary by Democratic Win (d)")
+```
+
+**Scatter Plot with Discontinuity:**
+
+```{r}
+# Visualize the RDD
+ggplot(rddsenate, aes(x = margin, y = vote, color = factor(d))) +
+  geom_point(alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(values = c("blue", "red"),
+                     labels = c("Republican Win", "Democratic Win")) +
+  labs(x = "Democratic Vote Margin (%)",
+       y = "Democratic Vote Share (%)",
+       color = "Outcome",
+       title = "Regression Discontinuity: Senate Elections") +
+  theme_minimal()
+```
+
+**Zooming in Near the Cutoff:**
+
+```{r}
+# Focus on elections within 10 percentage points
+rddsenate %>%
+  filter(abs(margin) <= 10) %>%
+  ggplot(aes(x = margin, y = vote, color = factor(d))) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_color_manual(values = c("blue", "red"),
+                     labels = c("Republican Win", "Democratic Win")) +
+  labs(x = "Democratic Vote Margin (%)",
+       y = "Democratic Vote Share (%)",
+       title = "Close Elections (within 10 p.p.)") +
+  theme_minimal()
+```
+
+**Question 2:** Based on the plots, do you see evidence of a discontinuity at the cutoff? Describe what you observe.
+
+# 3. Basic RDD Estimation
+
+**Objective:**
+Estimate the treatment effect using simple regression methods.
+
+**Instructions:**
+1. Center the running variable at the cutoff.
+2. Estimate a regression with treatment, centered margin, and their interaction.
+3. Interpret the treatment coefficient.
+
+**Code:**
+
+```{r}
+# The margin is already centered at 0 (cutoff)
+# Estimate basic RDD regression
+rdd_basic <- lm(vote ~ d + margin + d:margin, data = rddsenate)
+summary(rdd_basic)
+```
+
+**Interpretation:**
+
+$$\text{vote}_i = \beta_0 + \tau \cdot d_i + \beta_1 \cdot \text{margin}_i + \beta_2 \cdot (d_i \times \text{margin}_i) + \epsilon_i$$
+
+Where:
+- $\tau$ (coefficient on `d`) = the discontinuity at the cutoff
+- The interaction term allows different slopes on each side
+
+**Local Linear Regression:**
+
+```{r}
+# Restrict to observations near the cutoff (bandwidth = 5)
+bw <- 5
+rdd_local <- rddsenate %>%
+  filter(abs(margin) <= bw) %>%
+  lm(vote ~ d + margin + d:margin, data = .)
+
+summary(rdd_local)
+```
+
+**Question 3:** Report the estimated discontinuity from both the global and local regressions. How do they compare? Why might they differ?
+
+# 4. Optimal Bandwidth Selection with rdrobust
+
+**Objective:**
+Use the rdrobust package for data-driven bandwidth selection and robust inference.
+
+**Instructions:**
+1. Apply rdrobust to estimate the treatment effect.
+2. Examine the optimal bandwidth.
+3. Interpret the robust confidence intervals.
+
+**Code:**
+
+```{r}
+# RDD with optimal bandwidth
+rd_robust <- rdrobust(y = rddsenate$vote,
+                      x = rddsenate$margin,
+                      c = 0)
+summary(rd_robust)
+```
+
+**RDD Plot:**
+
+```{r}
+# Create RDD plot with optimal binning
+rdplot(y = rddsenate$vote,
+       x = rddsenate$margin,
+       c = 0,
+       title = "RD Plot: Senate Elections",
+       x.label = "Democratic Vote Margin (%)",
+       y.label = "Democratic Vote Share (%)")
+```
+
+**Question 4:**
+a) What bandwidth did rdrobust select?
+b) Report the robust estimate and 95% confidence interval.
+c) Is there a statistically significant discontinuity at the cutoff?
+
+# 5. Validity Checks
+
+**Objective:**
+Test the key assumptions of the RDD.
+
+**5.1 McCrary Density Test:**
+
+If candidates could precisely manipulate their vote margin to cross the threshold, we would see a discontinuity in the density of the running variable.
+
+```{r}
+# Density test for manipulation
+density_test <- rddensity(X = rddsenate$margin, c = 0)
+summary(density_test)
+```
+
+```{r}
+# Plot the density
+rdplotdensity(density_test, rddsenate$margin,
+              title = "McCrary Density Test")
+```
+
+**Interpretation:**
+- Null hypothesis: No discontinuity in density (no manipulation)
+- A significant p-value suggests potential manipulation
+
+**5.2 Covariate Balance:**
+
+If the RDD is valid, pre-determined covariates should be balanced at the cutoff.
+
+```{r}
+# Test for discontinuity in year (a pre-determined variable)
+rd_year <- rdrobust(y = rddsenate$year,
+                    x = rddsenate$margin,
+                    c = 0)
+summary(rd_year)
+```
+
+**Question 5:**
+a) Does the density test suggest manipulation of vote margins?
+b) Should we expect a discontinuity in election year at the cutoff? Why or why not?
+
+# 6. Robustness Analysis
+
+**Objective:**
+Check whether results are robust to different specifications.
+
+**6.1 Bandwidth Sensitivity:**
+
+```{r}
+# Estimate with different bandwidths
+bandwidths <- c(2, 5, 10, 15, 20)
+bw_results <- tibble()
+
+for(bw in bandwidths) {
+  rd <- rdrobust(y = rddsenate$vote, x = rddsenate$margin, c = 0, h = bw)
+  bw_results <- bind_rows(bw_results,
+                          tibble(Bandwidth = bw,
+                                 Estimate = rd$coef[1],
+                                 SE = rd$se[1],
+                                 CI_Lower = rd$ci[1,1],
+                                 CI_Upper = rd$ci[1,2],
+                                 N_Left = rd$N[1],
+                                 N_Right = rd$N[2]))
+}
+
+bw_results %>%
+  mutate(across(where(is.numeric), ~round(., 3))) %>%
+  kable(caption = "Bandwidth Sensitivity Analysis")
+```
+
+**Plot Bandwidth Sensitivity:**
+
+```{r}
+ggplot(bw_results, aes(x = Bandwidth, y = Estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Bandwidth",
+       y = "Estimated Discontinuity",
+       title = "Bandwidth Sensitivity") +
+  theme_minimal()
+```
+
+**6.2 Placebo Cutoffs:**
+
+```{r}
+# Test at placebo cutoffs where there should be no effect
+placebo_cutoffs <- c(-20, -10, 10, 20)
+placebo_results <- tibble()
+
+for(pc in placebo_cutoffs) {
+  # Filter data to one side of the true cutoff
+  if(pc < 0) {
+    subset_data <- rddsenate %>% filter(margin < 0)
+  } else {
+    subset_data <- rddsenate %>% filter(margin > 0)
+  }
+
+  rd <- rdrobust(y = subset_data$vote, x = subset_data$margin, c = pc)
+  placebo_results <- bind_rows(placebo_results,
+                               tibble(Cutoff = pc,
+                                      Estimate = rd$coef[1],
+                                      SE = rd$se[1],
+                                      p_value = rd$pv[1]))
+}
+
+placebo_results %>%
+  mutate(across(where(is.numeric), ~round(., 3))) %>%
+  kable(caption = "Placebo Cutoff Tests")
+```
+
+**Question 6:**
+a) Are the results stable across different bandwidths?
+b) Do you find significant effects at the placebo cutoffs? What does this tell you?
+
+# Summary Questions
+
+Answer the following questions in complete sentences:
+
+1. **Interpretation:** Based on your analysis, what is your best estimate of the discontinuity in Democratic vote share at the margin = 0 cutoff? Provide a 95% confidence interval.
+
+2. **Validity:** Summarize the evidence from your validity checks (density test, covariate balance). Do the RDD assumptions appear to hold?
+
+3. **Causal Interpretation:** What causal effect does this discontinuity estimate? Be precise about what "treatment" and "control" mean in this context.
+
+4. **Limitations:**
+   a) What is meant by the "local" nature of RDD estimates?
+   b) Why might the effect at the cutoff differ from effects further from the cutoff?
+
+5. **Policy Relevance:** How might researchers use this type of RDD analysis to study the effects of incumbency or party control on policy outcomes?
+
+# Bonus: Different Polynomial Orders
+
+```{r}
+#| eval: false
+
+# Compare linear vs quadratic specifications
+rd_linear <- rdrobust(y = rddsenate$vote, x = rddsenate$margin, c = 0, p = 1)
+rd_quadratic <- rdrobust(y = rddsenate$vote, x = rddsenate$margin, c = 0, p = 2)
+
+cat("Linear estimate:", round(rd_linear$coef[1], 3), "\n")
+cat("Quadratic estimate:", round(rd_quadratic$coef[1], 3), "\n")
+```
